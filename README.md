@@ -1,0 +1,2 @@
+# Shopee_Azrael_PicturePuzzle_Tools
+專為蝦皮賣家打造的高效圖片處理工具，結合長圖拼接、智慧裁切等功能。
