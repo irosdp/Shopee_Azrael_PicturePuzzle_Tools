@@ -149,6 +149,10 @@ class CropCanvas(QGraphicsView):
         self.setScene(self.scene)
         self.setBackgroundBrush(QBrush(QColor("#222")))
         
+        # [Fix 1] 設定 Viewport 更新模式為 FullViewportUpdate
+        # 這能解決背景圖在捲動時產生的撕裂與殘影問題，確保每次捲動都重繪整個視窗
+        self.setViewportUpdateMode(QGraphicsView.ViewportUpdateMode.FullViewportUpdate)
+        
         # 載入看板娘背景圖
         self.bg_char_pixmap = None
         char_path = resource_path("Azrael_Full.png")
@@ -189,7 +193,7 @@ class CropCanvas(QGraphicsView):
             view_h = self.viewport().height()
             
             # 目標大小：大約佔據 1/4 區域 => 寬高各佔 50%
-            target_h = int(view_h * 0.7) #稍微大一點點更有氣勢，約 70% 高
+            target_h = int(view_h * 0.7) # 稍微大一點點更有氣勢，約 70% 高
             
             # 進行縮放 (保持比例)
             scaled_pix = self.bg_char_pixmap.scaledToHeight(target_h, Qt.TransformationMode.SmoothTransformation)
@@ -202,7 +206,7 @@ class CropCanvas(QGraphicsView):
             x = view_w - scaled_pix.width() - 20
             y = view_h - scaled_pix.height() - 20
             
-            # 設定淡化透明度 (0.0 ~ 1.0) -> 0.15 代表 15% 不透明度
+            # 設定淡化透明度
             painter.setOpacity(0.5)
             
             # 繪製
@@ -298,6 +302,9 @@ class CropCanvas(QGraphicsView):
         self.window().update_stats(total_pixels, self.selections)
 
     def mousePressEvent(self, event):
+        # [Fix 2] 防止未載入圖片時點擊崩潰
+        if not self.pixmap_item: return
+
         pos = self.mapToScene(event.pos())
         y = pos.y()
         margin = 20 
@@ -340,6 +347,9 @@ class CropCanvas(QGraphicsView):
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
+        # [Fix 2] 防止未載入圖片時操作崩潰
+        if not self.pixmap_item: return
+
         pos = self.mapToScene(event.pos())
         y = pos.y()
         margin = 20
@@ -397,6 +407,9 @@ class CropCanvas(QGraphicsView):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
+        # [Fix 2] 防止未載入圖片時操作崩潰
+        if not self.pixmap_item: return
+
         if self.current_action == 'MOVE_OR_SPLIT':
             pos = self.mapToScene(event.pos())
             y = pos.y()
@@ -441,7 +454,7 @@ class CropCanvas(QGraphicsView):
 class AboutDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle(f"關於蝦皮上架接圖神器 {CHAR_NAME}")
+        self.setWindowTitle(f"關於 {CHAR_NAME}")
         self.resize(350, 500)
         self.setStyleSheet("background-color: #263238; color: #fce4ec;")
         layout = QVBoxLayout(self)
@@ -483,7 +496,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.settings = QSettings("AzraelSoft", "ShopeeTool")
-        self.setWindowTitle(f"蝦皮上架接圖神器 - {APP_VERSION}")
+        self.setWindowTitle(f"蝦皮上架神器 - {APP_VERSION}")
         self.resize(1400, 900)
         self.setAcceptDrops(True)
         
@@ -691,7 +704,10 @@ class MainWindow(QMainWindow):
         self.lbl_stats.setText(info)
         
         if num_images > MAX_IMAGES:
-            self.lbl_warning.setText(f"⚠️ 超過 {MAX_IMAGES} 張！")
+            # [Fix 4] 新增需刪減的像素統計
+            max_allowed_h = MAX_IMAGES * MAX_SLICE_HEIGHT
+            excess_pixels = int(total_height) - max_allowed_h
+            self.lbl_warning.setText(f"⚠️ 超過 {MAX_IMAGES} 張！\n需刪減高度: 約 {excess_pixels} px")
             self.btn_export.setEnabled(False)
         else:
             self.lbl_warning.setText(f"✅ 符合限制")
@@ -779,6 +795,10 @@ class MainWindow(QMainWindow):
                 QMenu {{ background-color: {bg_panel}; border: 1px solid #455a64; color: {text_main}; }}
                 QMenu::item {{ padding: 5px 20px; }}
                 QMenu::item:selected {{ background-color: {accent_light}; color: white; }}
+                
+                /* [Fix 3] 修正 MessageBox 文字看不見的問題 */
+                QMessageBox {{ background-color: {bg_panel}; color: {text_main}; }}
+                QMessageBox QLabel {{ color: {text_main}; }}
             """
             self.canvas.setBackgroundBrush(QBrush(QColor("#101010")))
             self.minimap.setStyleSheet(f"background-color: {bg_dark};")
@@ -816,6 +836,10 @@ class MainWindow(QMainWindow):
                 QMenu {{ background-color: white; border: 1px solid {accent}; color: {text_main}; }}
                 QMenu::item {{ padding: 5px 20px; }}
                 QMenu::item:selected {{ background-color: {bg_panel}; color: {accent_hover}; }}
+                
+                /* [Fix 3] 修正 MessageBox 文字看不見的問題 */
+                QMessageBox {{ background-color: #fff; color: {text_main}; }}
+                QMessageBox QLabel {{ color: {text_main}; }}
             """
             self.canvas.setBackgroundBrush(QBrush(QColor("#fff0f5")))
             self.minimap.setStyleSheet(f"background-color: {bg_light};")
