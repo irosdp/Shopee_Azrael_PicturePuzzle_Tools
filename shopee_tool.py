@@ -5,14 +5,14 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QH
                              QListWidget, QPushButton, QLabel, QFileDialog, QSplitter, 
                              QScrollArea, QMessageBox, QFrame, QAbstractItemView, QGraphicsView, 
                              QGraphicsScene, QGraphicsPixmapItem, QGraphicsRectItem, QGraphicsLineItem,
-                             QGraphicsPathItem, QDialog, QMenu, QSizePolicy)
+                             QGraphicsPathItem, QDialog, QMenu, QSizePolicy, QListWidgetItem, QLineEdit)
 from PyQt6.QtCore import Qt, QRectF, QSettings, QSize
 from PyQt6.QtGui import (QPixmap, QImage, QDragEnterEvent, QDropEvent, QColor, QPen, QBrush, 
                          QPainter, QPainterPath, QIcon, QAction)
 from PIL import Image
 
 # --- 作者與角色資訊 ---
-APP_VERSION = "v1 Azrael Edition"
+APP_VERSION = "v1 Azrael Edition (Patch 5.6)"
 AUTHOR_NAME = "Aries Abriel Debrusc"
 AUTHOR_EMAIL = "irosdp@gmail.com"
 COPYRIGHT_YEAR = "2025"
@@ -30,12 +30,27 @@ def resource_path(relative_path):
         return os.path.join(sys._MEIPASS, relative_path)
     return os.path.join(os.path.abspath("."), relative_path)
 
+# --- 輔助函式：取得不重複的檔名 ---
+def get_unique_filename(directory, filename):
+    base, ext = os.path.splitext(filename)
+    counter = 1
+    new_filename = filename
+    full_path = os.path.join(directory, new_filename)
+    
+    while os.path.exists(full_path):
+        new_filename = f"{base}_{counter}{ext}"
+        full_path = os.path.join(directory, new_filename)
+        counter += 1
+        
+    return full_path
+
 class DraggableListWidget(QListWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setAcceptDrops(True)
         self.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
         self.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.mainWindow = None 
 
     def dragEnterEvent(self, event: QDragEnterEvent):
         if event.mimeData().hasUrls():
@@ -58,10 +73,20 @@ class DraggableListWidget(QListWidget):
                 path = url.toLocalFile()
                 if path.lower().endswith(('.png', '.jpg', '.jpeg', '.webp', '.bmp')):
                     files.append(path)
-            self.window().add_images_to_list(files)
+            if self.mainWindow:
+                self.mainWindow.add_images_to_list(files)
         else:
             super().dropEvent(event)
-            self.window().refresh_preview()
+            if self.mainWindow:
+                self.mainWindow.refresh_preview()
+
+    # [New] 支援 Delete 鍵刪除項目
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key.Key_Delete:
+            if self.mainWindow:
+                self.mainWindow.remove_images()
+        else:
+            super().keyPressEvent(event)
 
 class MultiColMiniMap(QWidget):
     def __init__(self, parent=None):
@@ -148,12 +173,8 @@ class CropCanvas(QGraphicsView):
         self.scene = QGraphicsScene(self)
         self.setScene(self.scene)
         self.setBackgroundBrush(QBrush(QColor("#222")))
-        
-        # [Fix 1] 設定 Viewport 更新模式為 FullViewportUpdate
-        # 這能解決背景圖在捲動時產生的撕裂與殘影問題，確保每次捲動都重繪整個視窗
         self.setViewportUpdateMode(QGraphicsView.ViewportUpdateMode.FullViewportUpdate)
         
-        # 載入看板娘背景圖
         self.bg_char_pixmap = None
         char_path = resource_path("Azrael_Full.png")
         if os.path.exists(char_path):
@@ -176,43 +197,20 @@ class CropCanvas(QGraphicsView):
         self.split_line_color = QColor("#FFEB3B")
 
     def drawBackground(self, painter, rect):
-        """ 覆寫背景繪製方法，加入看板娘浮水印 """
-        # 1. 先繪製原本的背景色
         super().drawBackground(painter, rect)
-
-        # 2. 繪製看板娘 (如果圖片存在)
         if self.bg_char_pixmap and not self.bg_char_pixmap.isNull():
-            # 保存畫筆狀態
             painter.save()
-            
-            # 重置 Transform，這樣我們就可以使用 Viewport (視窗) 的座標系，
-            # 讓圖片固定在右下角，不會隨著 Scrollbar 捲動而跑掉
             painter.resetTransform()
-            
             view_w = self.viewport().width()
             view_h = self.viewport().height()
-            
-            # 目標大小：大約佔據 1/4 區域 => 寬高各佔 50%
-            target_h = int(view_h * 0.7) # 稍微大一點點更有氣勢，約 70% 高
-            
-            # 進行縮放 (保持比例)
+            target_h = int(view_h * 0.7) 
             scaled_pix = self.bg_char_pixmap.scaledToHeight(target_h, Qt.TransformationMode.SmoothTransformation)
-            
-            # 如果縮放後寬度超過視窗的一半，則改用寬度限制
             if scaled_pix.width() > view_w * 0.6:
                 scaled_pix = self.bg_char_pixmap.scaledToWidth(int(view_w * 0.6), Qt.TransformationMode.SmoothTransformation)
-            
-            # 計算位置：右下角 (留一點 padding)
             x = view_w - scaled_pix.width() - 20
             y = view_h - scaled_pix.height() - 20
-            
-            # 設定淡化透明度
             painter.setOpacity(0.5)
-            
-            # 繪製
             painter.drawPixmap(x, y, scaled_pix)
-            
-            # 恢復畫筆
             painter.restore()
 
     def load_image(self, pil_image):
@@ -231,8 +229,12 @@ class CropCanvas(QGraphicsView):
         pixmap = QPixmap.fromImage(qimage)
         
         self.pixmap_item = QGraphicsPixmapItem(pixmap)
-        self.pixmap_item.setZValue(0) # 圖片層級 0 (會在 drawBackground 之上)
+        self.pixmap_item.setZValue(0) 
         self.scene.addItem(self.pixmap_item)
+        self.reset_to_full_selection() 
+
+    def reset_to_full_selection(self):
+        if not self.pixmap_item: return
         self.selections = [QRectF(0, 0, self.image_width, self.image_height)]
         self.refresh_overlays()
 
@@ -302,11 +304,11 @@ class CropCanvas(QGraphicsView):
         self.window().update_stats(total_pixels, self.selections)
 
     def mousePressEvent(self, event):
-        # [Fix 2] 防止未載入圖片時點擊崩潰
         if not self.pixmap_item: return
 
         pos = self.mapToScene(event.pos())
         y = pos.y()
+        y = max(0, min(y, self.image_height))
         margin = 20 
         
         self.active_rect_index = -1
@@ -347,11 +349,12 @@ class CropCanvas(QGraphicsView):
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
-        # [Fix 2] 防止未載入圖片時操作崩潰
         if not self.pixmap_item: return
 
         pos = self.mapToScene(event.pos())
         y = pos.y()
+        y = max(0, min(y, self.image_height))
+        
         margin = 20
 
         cursor_set = False
@@ -407,7 +410,6 @@ class CropCanvas(QGraphicsView):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
-        # [Fix 2] 防止未載入圖片時操作崩潰
         if not self.pixmap_item: return
 
         if self.current_action == 'MOVE_OR_SPLIT':
@@ -455,7 +457,7 @@ class AboutDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle(f"關於 {CHAR_NAME}")
-        self.resize(350, 500)
+        self.resize(450, 600)
         self.setStyleSheet("background-color: #263238; color: #fce4ec;")
         layout = QVBoxLayout(self)
         
@@ -465,7 +467,7 @@ class AboutDialog(QDialog):
         char_img_path = resource_path("Azrael_Full.png")
         if os.path.exists(char_img_path):
             pix = QPixmap(char_img_path)
-            pix = pix.scaled(300, 300, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+            pix = pix.scaled(390, 390, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
             self.img_label.setPixmap(pix)
         else:
             self.img_label.setText("(Azrael_Full.png 未找到)")
@@ -504,7 +506,7 @@ class MainWindow(QMainWindow):
         if os.path.exists(icon_path):
             self.setWindowIcon(QIcon(icon_path))
             
-        self.image_paths = []
+        self.image_paths = [] 
         self.stitched_image = None
         
         main_widget = QWidget()
@@ -558,20 +560,47 @@ class MainWindow(QMainWindow):
         left_layout.addWidget(lbl_hint)
         
         self.file_list = DraggableListWidget()
+        self.file_list.mainWindow = self
         left_layout.addWidget(self.file_list)
         
+        # [New] 排序按鈕區
+        sort_layout = QHBoxLayout()
+        btn_sort_name = QPushButton("依名稱排序")
+        btn_sort_name.clicked.connect(self.sort_images_by_name)
+        btn_sort_date = QPushButton("依日期排序")
+        btn_sort_date.clicked.connect(self.sort_images_by_date)
+        sort_layout.addWidget(btn_sort_name)
+        sort_layout.addWidget(btn_sort_date)
+        left_layout.addLayout(sort_layout)
+
+        # 功能按鈕區
         btn_layout = QHBoxLayout()
-        btn_remove = QPushButton("移除")
-        btn_remove.clicked.connect(self.remove_images)
-        btn_clear = QPushButton("清空")
+        btn_reset_selection = QPushButton("重製選取區")
+        btn_reset_selection.clicked.connect(self.reset_canvas_selection)
+        btn_clear = QPushButton("清空圖庫")
         btn_clear.clicked.connect(self.clear_all)
-        btn_layout.addWidget(btn_remove)
+        btn_layout.addWidget(btn_reset_selection)
         btn_layout.addWidget(btn_clear)
         left_layout.addLayout(btn_layout)
         
-        btn_refresh = QPushButton("⟳ 重新拼接預覽")
-        btn_refresh.clicked.connect(self.refresh_preview)
-        left_layout.addWidget(btn_refresh)
+        # 檔名設定區
+        setting_group = QFrame()
+        setting_layout = QVBoxLayout(setting_group)
+        setting_layout.setContentsMargins(0,10,0,5)
+        
+        lbl_prefix_desc = QLabel("描述圖前綴 (Shpoee_XXX):")
+        saved_desc = self.settings.value("prefix_desc", "Shopee")
+        self.txt_prefix_desc = QLineEdit(str(saved_desc))
+        
+        lbl_prefix_main = QLabel("主圖前綴 (Main_XXX):")
+        saved_main = self.settings.value("prefix_main", "Main")
+        self.txt_prefix_main = QLineEdit(str(saved_main))
+        
+        setting_layout.addWidget(lbl_prefix_desc)
+        setting_layout.addWidget(self.txt_prefix_desc)
+        setting_layout.addWidget(lbl_prefix_main)
+        setting_layout.addWidget(self.txt_prefix_main)
+        left_layout.addWidget(setting_group)
 
         self.status_box = QFrame()
         self.status_box.setObjectName("StatusBox") 
@@ -584,10 +613,15 @@ class MainWindow(QMainWindow):
         sb_layout.addWidget(self.lbl_warning)
         left_layout.addWidget(self.status_box)
 
-        self.btn_export = QPushButton("2. 確認並輸出")
+        self.btn_export = QPushButton("2. 輸出描述圖 (裁切)")
         self.btn_export.setObjectName("ExportBtn")
         self.btn_export.clicked.connect(self.export_images)
         left_layout.addWidget(self.btn_export)
+
+        self.btn_export_raw = QPushButton("3. 輸出選取區 (不裁切)")
+        self.btn_export_raw.setObjectName("ExportBtnRaw")
+        self.btn_export_raw.clicked.connect(self.export_selections_raw)
+        left_layout.addWidget(self.btn_export_raw)
         
         lc_layout.addWidget(left_panel)
 
@@ -633,17 +667,23 @@ class MainWindow(QMainWindow):
         self.apply_theme("AzraelDeep")
 
     def open_file_dialog(self):
-        last_dir = self.settings.value("last_dir", os.path.expanduser("~"))
+        last_dir = self.settings.value("last_open_dir", os.path.expanduser("~"))
         files, _ = QFileDialog.getOpenFileNames(self, "選擇圖片", last_dir, "Images (*.png *.jpg *.jpeg *.webp *.bmp)")
         if files:
-            self.settings.setValue("last_dir", os.path.dirname(files[0]))
+            self.settings.setValue("last_open_dir", os.path.dirname(files[0]))
             self.add_images_to_list(files)
 
     def add_images_to_list(self, files):
         for f in files:
-            if f not in self.image_paths:
-                self.image_paths.append(f)
-                self.file_list.addItem(os.path.basename(f))
+            found = False
+            for i in range(self.file_list.count()):
+                if self.file_list.item(i).data(Qt.ItemDataRole.UserRole) == f:
+                    found = True
+                    break
+            if not found:
+                item = QListWidgetItem(os.path.basename(f))
+                item.setData(Qt.ItemDataRole.UserRole, f)
+                self.file_list.addItem(item)
         self.refresh_preview()
 
     def remove_images(self):
@@ -652,21 +692,69 @@ class MainWindow(QMainWindow):
         for item in selected_items:
             row = self.file_list.row(item)
             self.file_list.takeItem(row)
-            del self.image_paths[row]
         self.refresh_preview()
 
+    # [New] 依名稱排序
+    def sort_images_by_name(self):
+        if self.file_list.count() == 0: return
+        
+        items_data = []
+        for i in range(self.file_list.count()):
+            path = self.file_list.item(i).data(Qt.ItemDataRole.UserRole)
+            items_data.append(path)
+            
+        # 依檔名排序 (不分大小寫)
+        items_data.sort(key=lambda x: os.path.basename(x).lower())
+        
+        self.file_list.clear()
+        for path in items_data:
+            item = QListWidgetItem(os.path.basename(path))
+            item.setData(Qt.ItemDataRole.UserRole, path)
+            self.file_list.addItem(item)
+            
+        self.refresh_preview()
+
+    # [New] 依日期排序
+    def sort_images_by_date(self):
+        if self.file_list.count() == 0: return
+        
+        items_data = []
+        for i in range(self.file_list.count()):
+            path = self.file_list.item(i).data(Qt.ItemDataRole.UserRole)
+            if os.path.exists(path):
+                items_data.append((path, os.path.getmtime(path)))
+            
+        # 依日期排序 (舊到新)
+        items_data.sort(key=lambda x: x[1])
+        
+        self.file_list.clear()
+        for path, _ in items_data:
+            item = QListWidgetItem(os.path.basename(path))
+            item.setData(Qt.ItemDataRole.UserRole, path)
+            self.file_list.addItem(item)
+            
+        self.refresh_preview()
+
+    def reset_canvas_selection(self):
+        if self.stitched_image:
+            self.canvas.reset_to_full_selection()
+
     def clear_all(self):
-        self.image_paths = []
         self.file_list.clear()
         self.canvas.scene.clear()
         self.minimap.update_data(None, [])
         self.lbl_stats.setText("列表已清空")
 
     def refresh_preview(self):
-        if not self.image_paths: return
+        if self.file_list.count() == 0: 
+            return
+
         try:
             processed_imgs = []
-            for path in self.image_paths:
+            for i in range(self.file_list.count()):
+                path = self.file_list.item(i).data(Qt.ItemDataRole.UserRole)
+                if not path or not os.path.exists(path): continue
+                
                 img = Image.open(path)
                 if img.mode != "RGB":
                     img = img.convert("RGB")
@@ -676,6 +764,8 @@ class MainWindow(QMainWindow):
                 img = img.resize((TARGET_WIDTH, new_h), Image.Resampling.LANCZOS)
                 processed_imgs.append(img)
             
+            if not processed_imgs: return
+
             total_h = sum(img.height for img in processed_imgs)
             self.stitched_image = Image.new("RGB", (TARGET_WIDTH, total_h), (255, 255, 255))
             y_offset = 0
@@ -704,7 +794,6 @@ class MainWindow(QMainWindow):
         self.lbl_stats.setText(info)
         
         if num_images > MAX_IMAGES:
-            # [Fix 4] 新增需刪減的像素統計
             max_allowed_h = MAX_IMAGES * MAX_SLICE_HEIGHT
             excess_pixels = int(total_height) - max_allowed_h
             self.lbl_warning.setText(f"⚠️ 超過 {MAX_IMAGES} 張！\n需刪減高度: 約 {excess_pixels} px")
@@ -719,8 +808,13 @@ class MainWindow(QMainWindow):
 
     def export_images(self):
         if not self.stitched_image: return
-        output_dir = QFileDialog.getExistingDirectory(self, "選擇輸出資料夾", self.settings.value("last_dir", ""))
+        self.settings.setValue("prefix_desc", self.txt_prefix_desc.text())
+        
+        last_export_dir = self.settings.value("last_export_dir", os.path.expanduser("~"))
+        output_dir = QFileDialog.getExistingDirectory(self, "選擇輸出資料夾", last_export_dir)
         if not output_dir: return
+        
+        self.settings.setValue("last_export_dir", output_dir)
         
         selections = sorted(self.canvas.selections, key=lambda r: r.top())
         if not selections:
@@ -744,15 +838,53 @@ class MainWindow(QMainWindow):
             
         idx = 1
         curr_y = 0
+        prefix = self.txt_prefix_desc.text().strip() or "Shopee"
+        
         try:
             while curr_y < final_h:
                 cut_h = min(MAX_SLICE_HEIGHT, final_h - curr_y)
                 piece = final_long_img.crop((0, curr_y, TARGET_WIDTH, curr_y + cut_h))
-                name = f"shopee_{idx:02d}.jpg"
-                piece.save(os.path.join(output_dir, name), "JPEG", quality=95)
+                
+                filename = f"{prefix}_{idx:02d}.jpg"
+                save_path = get_unique_filename(output_dir, filename)
+                
+                piece.save(save_path, "JPEG", quality=95)
                 curr_y += cut_h
                 idx += 1
             QMessageBox.information(self, "完成", f"成功輸出 {idx-1} 張圖片！")
+        except Exception as e:
+            QMessageBox.critical(self, "存檔錯誤", str(e))
+
+    def export_selections_raw(self):
+        if not self.stitched_image: return
+        self.settings.setValue("prefix_main", self.txt_prefix_main.text())
+        
+        last_export_dir = self.settings.value("last_export_dir", os.path.expanduser("~"))
+        output_dir = QFileDialog.getExistingDirectory(self, "選擇輸出資料夾 (主圖模式)", last_export_dir)
+        if not output_dir: return
+        
+        self.settings.setValue("last_export_dir", output_dir)
+        
+        selections = sorted(self.canvas.selections, key=lambda r: r.top())
+        if not selections:
+            QMessageBox.warning(self, "提示", "沒有選取任何範圍！")
+            return
+
+        prefix = self.txt_prefix_main.text().strip() or "Main"
+        idx = 1
+        try:
+            for rect in selections:
+                y1, y2 = int(rect.top()), int(rect.bottom())
+                if y2 > y1:
+                    chunk = self.stitched_image.crop((0, y1, TARGET_WIDTH, y2))
+                    
+                    filename = f"{prefix}_{idx:02d}.jpg"
+                    save_path = get_unique_filename(output_dir, filename)
+                    
+                    chunk.save(save_path, "JPEG", quality=95)
+                    idx += 1
+                    
+            QMessageBox.information(self, "完成", f"成功輸出 {idx-1} 張主圖區塊！")
         except Exception as e:
             QMessageBox.critical(self, "存檔錯誤", str(e))
 
@@ -788,15 +920,19 @@ class MainWindow(QMainWindow):
                 QFrame#StatusBox {{ background-color: #37474f; border: 1px solid {accent_light}; border-radius: 5px; }}
                 QLabel#WarningLabel {{ color: #ff80ab; font-weight: bold; }}
                 
-                QPushButton#ExportBtn {{ background-color: {accent_light}; font-size: 15px; font-weight: bold; padding: 10px; }}
+                QLineEdit {{ background-color: #37474f; border: 1px solid #455a64; color: #eceff1; padding: 3px; }}
+                
+                QPushButton#ExportBtn {{ background-color: {accent_light}; font-size: 14px; font-weight: bold; padding: 8px; }}
                 QPushButton#ExportBtn:hover {{ background-color: {highlight}; }}
                 QPushButton#ExportBtn:disabled {{ background-color: #546e7a; color: #90a4ae; }}
+
+                QPushButton#ExportBtnRaw {{ background-color: #00897b; color: white; font-size: 14px; font-weight: bold; padding: 8px; }}
+                QPushButton#ExportBtnRaw:hover {{ background-color: #26a69a; }}
 
                 QMenu {{ background-color: {bg_panel}; border: 1px solid #455a64; color: {text_main}; }}
                 QMenu::item {{ padding: 5px 20px; }}
                 QMenu::item:selected {{ background-color: {accent_light}; color: white; }}
                 
-                /* [Fix 3] 修正 MessageBox 文字看不見的問題 */
                 QMessageBox {{ background-color: {bg_panel}; color: {text_main}; }}
                 QMessageBox QLabel {{ color: {text_main}; }}
             """
@@ -829,15 +965,19 @@ class MainWindow(QMainWindow):
                 QFrame#StatusBox {{ background-color: #fff; border: 1px solid {accent}; border-radius: 5px; }}
                 QLabel#WarningLabel {{ color: #c2185b; font-weight: bold; }}
                 
-                QPushButton#ExportBtn {{ background-color: {accent}; color: white; font-size: 15px; font-weight: bold; padding: 10px; }}
+                QLineEdit {{ background-color: #fff; border: 1px solid {accent}; color: {text_main}; padding: 3px; }}
+
+                QPushButton#ExportBtn {{ background-color: {accent}; color: white; font-size: 14px; font-weight: bold; padding: 8px; }}
                 QPushButton#ExportBtn:hover {{ background-color: {accent_hover}; }}
                 QPushButton#ExportBtn:disabled {{ background-color: #e0e0e0; color: #9e9e9e; border: none; }}
+
+                QPushButton#ExportBtnRaw {{ background-color: #26a69a; color: white; font-size: 14px; font-weight: bold; padding: 8px; border: none; }}
+                QPushButton#ExportBtnRaw:hover {{ background-color: #00897b; }}
 
                 QMenu {{ background-color: white; border: 1px solid {accent}; color: {text_main}; }}
                 QMenu::item {{ padding: 5px 20px; }}
                 QMenu::item:selected {{ background-color: {bg_panel}; color: {accent_hover}; }}
                 
-                /* [Fix 3] 修正 MessageBox 文字看不見的問題 */
                 QMessageBox {{ background-color: #fff; color: {text_main}; }}
                 QMessageBox QLabel {{ color: {text_main}; }}
             """
@@ -856,6 +996,5 @@ if __name__ == "__main__":
     app.setFont(font)
     
     window = MainWindow()
-    # 預設最大化
     window.showMaximized()
     sys.exit(app.exec())
