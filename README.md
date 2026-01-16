@@ -46,7 +46,8 @@
 
 ## 📸 介面預覽 (Screenshots)
 
-*(請在此處上傳您的軟體截圖，例如主畫面與關於視窗)*
+<img width="1920" height="1050" alt="screenshot" src="https://github.com/user-attachments/assets/9a7a150b-a77e-4d83-980c-1dae5c7af455" />
+
 
 ---
 
